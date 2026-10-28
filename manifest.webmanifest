@@ -1,0 +1,9 @@
+{
+  "name": "枫途 · 原型",
+  "short_name": "枫途",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#faf7f4",
+  "theme_color": "#b4442f",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
