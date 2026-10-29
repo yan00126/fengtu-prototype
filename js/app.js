@@ -9,9 +9,11 @@ import {
 import { BRANCHES, SKILL_NAMES, CAN_DO, CAREER_COUNTERS, XP } from './content.js';
 import { load, save, uid, emptyProfile, exportJson, importJson, emptyState } from './store.js';
 import { drawCard, canvasToBlob } from './card.js';
+import { EXPLORE, LANDMARKS, BASE_TYPES, checkFix, lanterns, camp } from './explore.js';
+import * as mapview from './mapview.js';
 
 let state = load();
-let ui = { pendingDelete: null, simA: {}, simB: {}, cardRange: 'day', cardOpts: { nickname: true, streak: true, sublevel: true, attempts: true } };
+let ui = { pendingDelete: null, simA: {}, simB: {}, cardRange: 'day', cardOpts: { nickname: true, streak: true, sublevel: true, attempts: true, explore: true } };
 const $app = document.getElementById('app');
 const $modal = document.getElementById('modal-root');
 
@@ -42,13 +44,216 @@ function render() {
   if (!state.acceptedNotice) return showNotice();
   if (!state.onboarded) return showOnboarding();
   const r = route();
-  const pages = { today: pageToday, skills: pageSkills, sim: pageSim, me: pageMe };
+  const pages = { today: pageToday, map: pageMap, skills: pageSkills, sim: pageSim, me: pageMe };
   $app.innerHTML = (pages[r] || pageToday)() + nav(r);
+  if (r === 'map') afterMapRender();
 }
 
 function nav(r) {
   const tab = (k, ico, name) => `<a href="#${k}" class="${r === k ? 'on' : ''}"><span class="ico">${ico}</span>${name}</a>`;
-  return `<nav class="tabs"><div class="inner">${tab('today', '◎', '今日')}${tab('skills', '✦', '技能')}${tab('sim', '⇄', '模拟')}${tab('me', '◐', '我的')}</div></nav>`;
+  return `<nav class="tabs"><div class="inner">${tab('today', '◎', '今日')}${tab('map', '⌖', '探索')}${tab('skills', '✦', '技能')}${tab('sim', '⇄', '模拟')}${tab('me', '◐', '我的')}</div></nav>`;
+}
+
+// ---------------- 探索 ----------------
+const explore = { watchId: null, last: null, status: '', wakeLock: null, newCells: 0 };
+const isDebug = new URLSearchParams(location.search).has('debug');
+
+function pageMap() {
+  const m = state.map;
+  if (!m.consent) {
+    return `<h1>探索</h1>
+    <div class="card">
+      <h2>走出去，揭开真实的加拿大</h2>
+      <p class="small">地图上盖着迷雾。你真的走到哪里，哪里的迷雾就会散开；学习和求职攒下的<b>灯火</b>，可以把到过的地方点亮，解锁地标、让营地成长。</p>
+      <h3>开始之前</h3>
+      <ul class="small">
+        <li>只有在你点“开始探索”、并且屏幕亮着的时候，才会读取位置。</li>
+        <li><b>位置和走过的格子只存在你的手机上</b>，不会上传。分享卡片不会显示地图和位置。</li>
+        <li>移动速度超过每小时 ${EXPLORE.maxSpeedKmh} 公里时不记录，请不要在开车时使用。</li>
+        <li>走路时注意路况和天气。不出门也不会被惩罚，灯火会一直攒着。</li>
+      </ul>
+      <button class="btn primary block" data-action="map-consent">我明白了，进入地图</button>
+    </div>`;
+  }
+  const lan = lanterns(m, totals(state).xp);
+  const litN = Object.keys(m.lit).length;
+  const c = camp(litN);
+  const libs = mapview.libsReady();
+  const unlocked = libs ? LANDMARKS.filter((l) => m.lit[mapview.cellAt(l.lat, l.lng)]) : [];
+  return `<h1>探索</h1>
+  <div class="grid4" style="margin-bottom:10px">
+    <div class="stat"><div class="v">${lan.balance}</div><div class="k">灯火</div></div>
+    <div class="stat"><div class="v">${Object.keys(m.visited).length}</div><div class="k">到过</div></div>
+    <div class="stat"><div class="v">${litN}</div><div class="k">点亮</div></div>
+    <div class="stat"><div class="v">${c.level}</div><div class="k">营地</div></div>
+  </div>
+  ${libs ? '<div class="map-slot" id="map-slot"></div>' : '<div class="card"><p class="err">地图组件没有加载成功，请检查网络后刷新。</p></div>'}
+  <div class="explore-status" id="explore-status">${esc(explore.status || '点击灰色格子可以点亮它（花 1 盏灯火）。')}</div>
+  <div class="grid2" style="margin-bottom:12px">
+    ${explore.watchId != null
+      ? '<button class="btn primary" data-action="explore-stop">停止探索</button>'
+      : '<button class="btn primary" data-action="explore-start">开始探索</button>'}
+    <button class="btn" data-action="light-nearby">点亮附近（最多 5 格）</button>
+  </div>
+  ${isDebug ? '<button class="btn small block" data-action="debug-walk" style="margin-bottom:12px">调试：模拟在渥太华走一段</button>' : ''}
+  <div class="card">
+    <div class="row between"><h2>营地：${esc(c.name)}</h2><span class="pill">Lv ${c.level}</span></div>
+    <p class="small muted">${c.next ? `再点亮 ${c.toNext} 格，营地会变成“${esc(c.next.name)}”。` : '营地已经发展成小镇了。'}</p>
+    <p class="tiny">灯火来自学习和求职：每 ${EXPLORE.xpPerLantern} XP 换 1 盏。累计获得 ${lan.earned} 盏，用掉 ${lan.spent} 盏。</p>
+  </div>
+  <div class="card">
+    <h2>地标 ${unlocked.length} / ${LANDMARKS.length}</h2>
+    ${unlocked.length ? `<ul class="list">${unlocked.map((l) => `<li><span>${esc(l.name)}</span><button class="btn small" data-action="show-landmark" data-id="${l.id}">查看</button></li>`).join('')}</ul>`
+      : '<p class="small muted">走到加拿大各个城市的地标附近、点亮那一格，就能解锁地标卡片。</p>'}
+  </div>
+  <div class="card">
+    <div class="row between"><h2>据点</h2><button class="btn small" data-action="open-base">把当前位置设为据点</button></div>
+    <p class="small muted">图书馆、法语角、学校、招聘会……探索时到达自己的据点，每个据点每天 +${EXPLORE.baseBonus} 盏灯火。</p>
+    ${m.bases.length ? `<ul class="list">${m.bases.map((b) => `<li><span>${esc(b.name)} <span class="tiny">${esc(b.type)}</span></span>
+      ${ui.pendingDelete === b.id ? `<button class="btn small" data-action="delete-base" data-id="${b.id}">确认删除</button>` : `<button class="btn small ghost" data-action="ask-delete" data-id="${b.id}" aria-label="删除">×</button>`}</li>`).join('')}</ul>` : ''}
+  </div>`;
+}
+
+function afterMapRender() {
+  if (!state.map.consent || !mapview.libsReady()) return;
+  const slot = document.getElementById('map-slot');
+  if (!slot) return;
+  const cells = Object.keys(state.map.visited);
+  mapview.mount(slot, {
+    initial: explore.last || (cells.length ? mapview.cellCenter(cells[cells.length - 1]) : null),
+    onCellClick: lightCell,
+  });
+  mapview.update(state.map, explore.last);
+}
+
+function setStatus(msg) {
+  explore.status = msg;
+  const el = document.getElementById('explore-status');
+  if (el) el.textContent = msg;
+}
+
+function onFix(fix) {
+  const check = checkFix(fix, explore.last);
+  if (!check.ok) {
+    setStatus(check.reason === 'speed'
+      ? `移动太快（约 ${Math.round(check.kmh)} 公里/小时），暂停记录。请不要在开车时使用。`
+      : '定位不够精确，正在等待更好的信号……');
+    return;
+  }
+  const first = !explore.last;
+  explore.last = fix;
+  const k = today();
+  const cells = mapview.ringCells(fix.lat, fix.lng);
+  const fresh = cells.filter((c) => !state.map.visited[c]);
+  const reached = state.map.bases.filter((b) => cells.includes(b.cell) && !(state.map.baseVisits[k] || []).includes(b.id));
+  if (fresh.length || reached.length) {
+    commit((s) => {
+      for (const c of fresh) s.map.visited[c] = k;
+      for (const b of reached) {
+        s.map.bonusLanterns += EXPLORE.baseBonus;
+        s.map.baseVisits[k] = [...(s.map.baseVisits[k] || []), b.id];
+      }
+    });
+    for (const b of reached) toast(`到达据点“${b.name}”，+${EXPLORE.baseBonus} 盏灯火`);
+  } else {
+    mapview.update(state.map, fix);
+  }
+  explore.newCells += fresh.length;
+  setStatus(`探索中 · 这次新揭开 ${explore.newCells} 格`);
+  if (first) mapview.flyTo(fix.lat, fix.lng);
+  else mapview.follow(fix.lat, fix.lng);
+}
+
+async function startExplore() {
+  if (!navigator.geolocation) { toast('这个浏览器不支持定位'); return; }
+  explore.newCells = 0;
+  explore.watchId = navigator.geolocation.watchPosition(
+    (p) => onFix({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy, speed: p.coords.speed, time: p.timestamp }),
+    (err) => {
+      setStatus(err.code === 1 ? '没有定位权限。请在浏览器设置里允许这个网站读取位置。' : '暂时拿不到位置，请到开阔的地方试试。');
+      if (err.code === 1) stopExplore();
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 },
+  );
+  try { explore.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* 不支持就算了 */ }
+  setStatus('正在定位……请保持屏幕亮着。');
+  render();
+}
+
+function stopExplore() {
+  if (explore.watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(explore.watchId);
+  explore.watchId = null;
+  explore.wakeLock?.release?.();
+  explore.wakeLock = null;
+  setStatus(explore.newCells ? `探索结束 · 这次新揭开 ${explore.newCells} 格` : '探索结束');
+  render();
+}
+
+function lightCell(cell) {
+  const m = state.map;
+  if (!m.visited[cell]) { setStatus('这里还盖着迷雾，要先走到附近才能点亮。'); return; }
+  if (m.lit[cell]) { const l = mapview.landmarkInCell(cell); if (l) showLandmark(l); return; }
+  if (lanterns(m, totals(state).xp).balance < EXPLORE.lightCost) { setStatus('灯火不够了。学习、求职都能获得灯火。'); return; }
+  const before = camp(Object.keys(m.lit).length);
+  commit((s) => { s.map.lit[cell] = today(); });
+  const after = camp(Object.keys(state.map.lit).length);
+  const l = mapview.landmarkInCell(cell);
+  if (l) showLandmark(l, true);
+  else if (after.level > before.level) toast(`营地升级：${after.name}`);
+  else setStatus('点亮了一格。');
+}
+
+function lightNearby() {
+  const m = state.map;
+  const center = explore.last || mapview.center();
+  const bal = lanterns(m, totals(state).xp).balance;
+  const dark = Object.keys(m.visited).filter((c) => !m.lit[c]);
+  if (!dark.length) { setStatus('附近没有可以点亮的格子。先出门走一走吧。'); return; }
+  if (bal < EXPLORE.lightCost) { setStatus('灯火不够了。学习、求职都能获得灯火。'); return; }
+  const dist = (c) => { const p = mapview.cellCenter(c); return (p.lat - center.lat) ** 2 + (p.lng - center.lng) ** 2; };
+  const pick = dark.sort((a, b) => dist(a) - dist(b)).slice(0, Math.min(5, Math.floor(bal / EXPLORE.lightCost)));
+  const before = camp(Object.keys(m.lit).length);
+  commit((s) => { for (const c of pick) s.map.lit[c] = today(); });
+  const after = camp(Object.keys(state.map.lit).length);
+  const l = pick.map((c) => mapview.landmarkInCell(c)).find(Boolean);
+  if (l) showLandmark(l, true);
+  else toast(after.level > before.level ? `营地升级：${after.name}` : `点亮了 ${pick.length} 格`);
+}
+
+function showLandmark(l, fresh = false) {
+  openModal(`<div class="celebrate"><div class="tiny">${fresh ? '解锁新地标' : '地标'}</div><div class="big">${esc(l.name)}</div></div>
+    <p>${esc(l.fact)}</p>
+    <button class="btn primary block" data-action="close-modal">好</button>`);
+}
+
+function openBase() {
+  if (!explore.last) { toast('先点“开始探索”，拿到当前位置后再设据点'); return; }
+  openModal(`<form data-form="base"><h1>设为据点</h1>
+    <p class="small muted">用你现在的位置。据点只存在你的手机上。</p>
+    <label class="field"><span>名字</span><input type="text" name="name" maxlength="20" placeholder="比如：市图书馆" required></label>
+    <label class="field"><span>类型</span><select name="type">${BASE_TYPES.map((t) => `<option>${t}</option>`).join('')}</select></label>
+    <button class="btn primary block">保存</button>
+    <button type="button" class="btn ghost block" data-action="close-modal" style="margin-top:8px">取消</button></form>`);
+}
+
+// 调试：沿着渥太华市中心走一段（国会山 → 拜沃德市场 → 渥太华大学）
+function debugWalk() {
+  const path = [[45.4236, -75.7009], [45.4250, -75.6960], [45.4290, -75.6920], [45.4268, -75.6880], [45.4231, -75.6831]];
+  const pts = [];
+  for (let i = 0; i < path.length - 1; i++) {
+    for (let t = 0; t < 1; t += 0.08) pts.push([path[i][0] + (path[i + 1][0] - path[i][0]) * t, path[i][1] + (path[i + 1][1] - path[i][1]) * t]);
+  }
+  let i = 0;
+  let time = Date.now();
+  explore.newCells = 0;
+  const step = () => {
+    if (i >= pts.length) { setStatus(`模拟结束 · 新揭开 ${explore.newCells} 格`); return; }
+    time += 40000; // 每步约 40 秒，相当于步行速度
+    onFix({ lat: pts[i][0], lng: pts[i][1], accuracy: 10, time });
+    i += 1;
+    setTimeout(step, 250);
+  };
+  step();
 }
 
 function header() {
@@ -304,7 +509,17 @@ function pageSim() {
 // ---------------- 我的 ----------------
 function pageMe() {
   const w = weekSummary(state, today());
-  const ach = achievements(state, today());
+  const visitedN = Object.keys(state.map.visited).length;
+  const litN = Object.keys(state.map.lit).length;
+  const landmarksN = mapview.libsReady() ? LANDMARKS.filter((l) => state.map.lit[mapview.cellAt(l.lat, l.lng)]).length : 0;
+  const ach = [
+    ...achievements(state, today()),
+    { name: '走出门', got: visitedN > 0, detail: '第一次揭开迷雾' },
+    { name: '点亮 10 格', got: litN >= 10, detail: '营地升起篝火' },
+    { name: '点亮 100 格', got: litN >= 100, detail: '地图上的一片光' },
+    { name: '第一个地标', got: landmarksN > 0, detail: '解锁一张地标卡片' },
+    { name: '有了据点', got: state.map.bases.length > 0, detail: '设置第一个据点' },
+  ];
   const delta = w.thisWeek.minutes - w.lastWeek.minutes;
   return `<h1>我的</h1>
   <div class="card"><h2>本周</h2>
@@ -612,6 +827,11 @@ function cardData() {
       if (n) lines.push(`${langName(lang)}考试：已挑战 ${n} 次`);
     }
   }
+  if (o.explore) {
+    const visited = Object.keys(state.map.visited).length;
+    const lit = Object.keys(state.map.lit).length;
+    if (visited) lines.push(`探索：到过 ${visited} 格，点亮 ${lit} 格 · 营地：${camp(lit).name}`);
+  }
   if (!lines.length) lines.push('每一天的努力都算数。');
   return {
     title,
@@ -630,8 +850,8 @@ async function openCard() {
   const chk = (k, n) => `<label class="check"><input type="checkbox" data-change="card-opt" data-key="${k}" ${o[k] ? 'checked' : ''}><span class="small">${n}</span></label>`;
   openModal(`<h1>分享卡片</h1>
     <div class="seg" data-seg="card-range"><button type="button" data-val="day" class="${ui.cardRange === 'day' ? 'on' : ''}">今日</button><button type="button" data-val="week" class="${ui.cardRange === 'week' ? 'on' : ''}">本周</button></div>
-    <div class="grid2" style="margin:8px 0">${chk('nickname', '显示昵称')}${chk('streak', '连续天数和等级')}${chk('sublevel', '法语小等级')}${chk('attempts', '考试挑战次数')}</div>
-    <p class="tiny">卡片不会显示 CRS 和个人档案。在手机上长按图片可以保存或转发。</p>
+    <div class="grid2" style="margin:8px 0">${chk('nickname', '显示昵称')}${chk('streak', '连续天数和等级')}${chk('sublevel', '法语小等级')}${chk('attempts', '考试挑战次数')}${chk('explore', '探索进度（不含位置）')}</div>
+    <p class="tiny">卡片不会显示 CRS、个人档案、地图和位置。在手机上长按图片可以保存或转发。</p>
     <img class="card-preview" src="${url}" alt="分享卡片预览">
     <div class="grid2" style="margin-top:10px">
       <button class="btn" data-action="card-download">保存图片</button>
@@ -706,6 +926,14 @@ document.addEventListener('click', async (e) => {
       mode: t.mode, planned: t.planned, completedPlan: !!t.planned && minutes >= t.planned, source: 'timer' });
   }
   if (a === 'timer-cancel') commit((s) => { s.timer = null; });
+  if (a === 'map-consent') commit((s) => { s.map.consent = true; });
+  if (a === 'explore-start') startExplore();
+  if (a === 'explore-stop') stopExplore();
+  if (a === 'light-nearby') lightNearby();
+  if (a === 'open-base') openBase();
+  if (a === 'debug-walk') debugWalk();
+  if (a === 'show-landmark') showLandmark(LANDMARKS.find((l) => l.id === el.dataset.id));
+  if (a === 'delete-base') { ui.pendingDelete = null; commit((s) => { s.map.bases = s.map.bases.filter((b) => b.id !== el.dataset.id); }); }
   if (a === 'export') {
     const withProfile = el.dataset.profile === '1';
     downloadBlob(new Blob([exportJson(state, withProfile)], { type: 'application/json' }), `枫途-备份-${today()}${withProfile ? '' : '-无档案'}.json`);
@@ -770,6 +998,13 @@ document.addEventListener('submit', (e) => {
     commit((s) => {
       s.timer = { startedAt: Date.now(), branch: fd.get('branch'), skill: fd.get('skill') || null, mode: fd.get('mode'), planned: Number(fd.get('planned')) || null };
     });
+  }
+  if (f === 'base') {
+    const fd = new FormData(form);
+    const p = explore.last;
+    closeModal();
+    commit((s) => s.map.bases.push({ id: uid(), name: String(fd.get('name')).trim() || '据点', type: fd.get('type'), lat: p.lat, lng: p.lng, cell: mapview.cellAt(p.lat, p.lng) }));
+    toast('据点已保存');
   }
   if (f === 'manual') {
     const fd = new FormData(form);

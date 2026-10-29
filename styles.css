@@ -136,5 +136,9 @@ nav.tabs a .ico { display: block; font-size: 18px; line-height: 1.2; }
 #toast { position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 999px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 20; max-width: 90vw; text-align: center; }
 #toast.show { opacity: 0.95; }
 
+.map-slot { height: 56vh; min-height: 320px; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); margin-bottom: 10px; background: #2f2a26; }
+#map { width: 100%; height: 100%; }
+.explore-status { font-size: 13px; color: var(--text-2); min-height: 20px; margin: 6px 0 10px; }
+
 .card-preview { width: 100%; border-radius: 12px; border: 1px solid var(--border); display: block; }
 .err { color: var(--accent-text); font-size: 13px; }

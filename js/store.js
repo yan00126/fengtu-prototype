@@ -1,4 +1,6 @@
 // 本地存储：数据只存在这台设备的浏览器里，不发送到任何地方。
+import { emptyMap } from './explore.js';
+
 const KEY = 'fengtu.v1';
 
 export function emptyProfile() {
@@ -39,6 +41,7 @@ export function emptyState() {
     focus: null, // { week, branch, skill }
     timer: null, // { startedAt, branch, skill, mode, planned }
     lastCelebration: null,
+    map: emptyMap(), // 探索：到过的格子、点亮的格子、据点（位置只存在本机）
   };
 }
 
@@ -46,7 +49,8 @@ export function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return emptyState();
-    return { ...emptyState(), ...JSON.parse(raw) };
+    const data = JSON.parse(raw);
+    return { ...emptyState(), ...data, map: { ...emptyMap(), ...(data.map || {}) } };
   } catch {
     return emptyState();
   }
@@ -71,6 +75,12 @@ export function exportJson(state, withProfile) {
   if (!withProfile) {
     data.profile = null;
     data.nickname = '';
+    // 位置也属于个人档案：只保留数量，不保留格子和据点
+    data.map = { ...emptyMap(), consent: data.map?.consent, summary: {
+      visited: Object.keys(data.map?.visited || {}).length,
+      lit: Object.keys(data.map?.lit || {}).length,
+      bases: (data.map?.bases || []).length,
+    } };
   }
   return JSON.stringify(data, null, 2);
 }
@@ -79,5 +89,5 @@ export function importJson(text) {
   const data = JSON.parse(text);
   if (!data || data.version !== 1 || !Array.isArray(data.sessions)) throw new Error('文件格式不对');
   const base = emptyState();
-  return { ...base, ...data, profile: data.profile || base.profile };
+  return { ...base, ...data, profile: data.profile || base.profile, map: { ...emptyMap(), ...(data.map || {}) } };
 }
